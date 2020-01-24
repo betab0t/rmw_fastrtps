@@ -15,6 +15,7 @@
 
 #include <memory>
 
+#include "rcutils/strdup.h"
 #include "rcutils/types.h"
 
 #include "rmw/init.h"
@@ -55,6 +56,17 @@ rmw_init_options_init(rmw_init_options_t * init_options, rcutils_allocator_t all
   init_options->implementation_identifier = eprosima_fastrtps_identifier;
   init_options->allocator = allocator;
   init_options->impl = nullptr;
+  init_options->name = rcutils_strdup("", allocator);
+  if (!init_options->name) {
+    RMW_SET_ERROR_MSG("failed to copy context name");
+    return RMW_RET_BAD_ALLOC;
+  }
+  init_options->namespace_ = rcutils_strdup("", allocator);
+  if (!init_options->namespace_) {
+    allocator.deallocate(init_options->name, allocator.state);
+    RMW_SET_ERROR_MSG("failed to copy context namespace");
+    return RMW_RET_BAD_ALLOC;
+  }
   return RMW_RET_OK;
 }
 
@@ -72,20 +84,46 @@ rmw_init_options_copy(const rmw_init_options_t * src, rmw_init_options_t * dst)
     RMW_SET_ERROR_MSG("expected zero-initialized dst");
     return RMW_RET_INVALID_ARGUMENT;
   }
+  // TODO(ivanpauno): remove the const from the signature.
+  const rcutils_allocator_t * allocator = (rcutils_allocator_t *)&src->allocator;
+  rmw_ret_t ret = RMW_RET_OK;
+
   *dst = *src;
-  return RMW_RET_OK;
+  dst->name = NULL;
+  dst->namespace_ = NULL;
+  dst->security_options = rmw_get_zero_initialized_security_options();
+
+  dst->name = rcutils_strdup(src->name, *allocator);
+  if (!dst->name) {
+    ret = RMW_RET_BAD_ALLOC;
+    goto fail;
+  }
+  dst->namespace_ = rcutils_strdup(src->namespace_, *allocator);
+  if(!dst->namespace_) {
+    ret = RMW_RET_BAD_ALLOC;
+    goto fail;
+  }
+  return rmw_security_options_copy(&src->security_options, allocator, &dst->security_options);
+fail:
+  allocator->deallocate(dst->name, allocator->state);
+  allocator->deallocate(dst->namespace_, allocator->state);
+  return ret;
 }
 
 rmw_ret_t
 rmw_init_options_fini(rmw_init_options_t * init_options)
 {
   RMW_CHECK_ARGUMENT_FOR_NULL(init_options, RMW_RET_INVALID_ARGUMENT);
-  RCUTILS_CHECK_ALLOCATOR(&(init_options->allocator), return RMW_RET_INVALID_ARGUMENT);
+  rcutils_allocator_t & allocator = init_options->allocator;
+  RCUTILS_CHECK_ALLOCATOR(&allocator, return RMW_RET_INVALID_ARGUMENT);
   RMW_CHECK_TYPE_IDENTIFIERS_MATCH(
     init_options,
     init_options->implementation_identifier,
     eprosima_fastrtps_identifier,
     return RMW_RET_INCORRECT_RMW_IMPLEMENTATION);
+  allocator.deallocate(init_options->name, allocator.state);
+  allocator.deallocate(init_options->namespace_, allocator.state);
+  rmw_security_options_fini(&init_options->security_options, &allocator);
   *init_options = rmw_get_zero_initialized_init_options();
   return RMW_RET_OK;
 }
@@ -115,6 +153,7 @@ rmw_init(const rmw_init_options_t * options, rmw_context_t * context)
 
   std::unique_ptr<rmw_context_impl_t> context_impl(new rmw_context_impl_t());
   if (!context_impl) {
+    RMW_SET_ERROR_MSG("failed to allocate context impl");
     return RMW_RET_BAD_ALLOC;
   }
   context->options = rmw_get_zero_initialized_init_options();
